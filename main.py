@@ -1,4 +1,5 @@
 import asyncio
+import os
 import aiohttp
 import requests
 from datetime import datetime, timedelta
@@ -6,7 +7,11 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 
-BOT_TOKEN = "8706646874:AAEsrTRcCfWB9ogKXggUVfgCH-zVRHLf_7w"
+# Бот будет брать токен из системной переменной TELEGRAM_BOT_TOKEN
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise ValueError("Не задан TELEGRAM_BOT_TOKEN в переменных окружения!")
 
 BASE_URL = "https://n551098.alteg.io/api/v1/booking/search"
 HEADERS = {
@@ -33,7 +38,6 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 ADMIN_CHAT_ID = None
-# Ключ словаря теперь кортеж (staff_id, date_str), чтобы хранить слоты по дням по отдельности
 previous_slots_state = {}
 
 def get_target_dates():
@@ -62,7 +66,6 @@ async def handle_start(message: Message):
         reply_markup=keyboard
     )
 
-# Ручной вывод сводки по всем кортам на 3 дня
 @dp.callback_query(F.data == "show_free_courts")
 async def process_show_courts(callback: CallbackQuery):
     await callback.answer()
@@ -109,19 +112,15 @@ async def process_show_courts(callback: CallbackQuery):
                 except Exception:
                     pass
 
-                await asyncio.sleep(0.1) # Короткая пауза между запросами
+                await asyncio.sleep(0.1)
 
             if not has_slots_on_date:
                 report_lines.append("  • <i>Свободных мест нет ни на одном корте</i>")
-            report_lines.append("") # Пустая строка для читаемости
+            report_lines.append("")
 
     await status_msg.delete()
-
-    # В телеграм сообщения имеют лимит по символам, но на 3 дня должно хватить. Отправляем результат:
     await callback.message.answer("\n".join(report_lines), parse_mode="HTML")
 
-
-# Фоновая задача мониторинга на 3 дня вперед
 async def background_court_monitor():
     await asyncio.sleep(15)
 
@@ -130,7 +129,6 @@ async def background_court_monitor():
             if ADMIN_CHAT_ID:
                 dates = get_target_dates()
 
-                # Используем обычный requests внутри потока, чтобы избежать любых проблем с сессиями aiohttp
                 def fetch_timeslots(staff_id, date_str):
                     payload = {
                         "context": {"location_id": 521176},
@@ -139,7 +137,6 @@ async def background_court_monitor():
                             "records": [{"staff_id": staff_id, "attendance_service_items": []}]
                         }
                     }
-                    # Отключаем предупреждения о неверном SSL для requests через verify=False
                     response = requests.post(f"{BASE_URL}/timeslots", headers=HEADERS, json=payload, timeout=10, verify=False)
                     if response.status_code == 200:
                         return response.json()
@@ -148,7 +145,6 @@ async def background_court_monitor():
                 for date_str in dates:
                     for staff_id, court_name in COURTS.items():
                         try:
-                            # Запускаем синхронный запрос в отдельном потоке, чтобы не блокировать бота
                             data = await asyncio.to_thread(fetch_timeslots, staff_id, date_str)
 
                             if data:
@@ -186,10 +182,12 @@ async def background_court_monitor():
         except Exception as e:
             print(f"Ошибка в фоне: {e}")
 
-        # Пауза перед следующей глобальной проверкой всех кортов (3 минуты)
         await asyncio.sleep(180)
 
 async def main():
+    # Удаляем вебхук перед запуском поллинга
+    await bot.delete_webhook(drop_pending_updates=True)
+
     asyncio.create_task(background_court_monitor())
     await dp.start_polling(bot)
 
